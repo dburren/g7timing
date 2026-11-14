@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="1024" height="1024">
+  <!-- G7timing app icon: solid hourglass with amber sand and signal arcs on navy.
+       Full-bleed square: iOS and Android apply their own corner masks. -->
+  <rect width="120" height="120" fill="#042C53"/>
+  <path d="M40 26 H80 C80 44 66 50 64 60 C66 70 80 76 80 94 H40 C40 76 54 70 56 60 C54 50 40 44 40 26 Z" fill="#E6F1FB"/>
+  <path d="M52 33 H68 C67 41 62 47 60 51 C58 47 53 41 52 33 Z" fill="#EF9F27"/>
+  <path d="M46 91 H74 C74 82 66 76 60 74 C54 76 46 82 46 91 Z" fill="#EF9F27"/>
+  <path d="M27 46 A18 18 0 0 0 27 74" fill="none" stroke="#EF9F27" stroke-width="6" stroke-linecap="round"/>
+  <path d="M93 46 A18 18 0 0 1 93 74" fill="none" stroke="#EF9F27" stroke-width="6" stroke-linecap="round"/>
+</svg>

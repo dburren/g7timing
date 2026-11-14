@@ -1,0 +1,13 @@
+// SPDX-FileCopyrightText: 2026 David Burren
+// SPDX-License-Identifier: Apache-2.0
+
+import SwiftUI
+
+@main
+struct iOSApp: App {
+    var body: some Scene {
+        WindowGroup {
+            ContentView()
+        }
+    }
+}

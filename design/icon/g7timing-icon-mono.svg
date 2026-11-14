@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="1024" height="1024">
+  <!-- One-colour version (Android themed icons): hourglass silhouette and arcs, no sand. -->
+  <path d="M40 26 H80 C80 44 66 50 64 60 C66 70 80 76 80 94 H40 C40 76 54 70 56 60 C54 50 40 44 40 26 Z" fill="#000000"/>
+  <path d="M27 46 A18 18 0 0 0 27 74" fill="none" stroke="#000000" stroke-width="6" stroke-linecap="round"/>
+  <path d="M93 46 A18 18 0 0 1 93 74" fill="none" stroke="#000000" stroke-width="6" stroke-linecap="round"/>
+</svg>

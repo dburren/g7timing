@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- G7timing icon foreground. Same paths as design/icon/g7timing-icon.svg (120-unit space),
+     scaled to fit Android's 66 dp safe zone in the 108 dp adaptive-icon canvas. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <group
+        android:scaleX="0.72"
+        android:scaleY="0.72"
+        android:translateX="10.8"
+        android:translateY="10.8">
+        <path
+            android:fillColor="#E6F1FB"
+            android:pathData="M40,26 H80 C80,44 66,50 64,60 C66,70 80,76 80,94 H40 C40,76 54,70 56,60 C54,50 40,44 40,26 Z" />
+        <path
+            android:fillColor="#EF9F27"
+            android:pathData="M52,33 H68 C67,41 62,47 60,51 C58,47 53,41 52,33 Z" />
+        <path
+            android:fillColor="#EF9F27"
+            android:pathData="M46,91 H74 C74,82 66,76 60,74 C54,76 46,82 46,91 Z" />
+        <path
+            android:strokeColor="#EF9F27"
+            android:strokeWidth="6"
+            android:strokeLineCap="round"
+            android:pathData="M27,46 A18,18 0 0,0 27,74" />
+        <path
+            android:strokeColor="#EF9F27"
+            android:strokeWidth="6"
+            android:strokeLineCap="round"
+            android:pathData="M93,46 A18,18 0 0,1 93,74" />
+    </group>
+</vector>
