@@ -9,8 +9,11 @@ import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothGatt
 import android.bluetooth.BluetoothGattCallback
+import android.bluetooth.BluetoothGattCharacteristic
+import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
+import android.bluetooth.BluetoothStatusCodes
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanResult
@@ -26,12 +29,16 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.ReceiveChannel
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import java.util.UUID
@@ -40,8 +47,8 @@ private const val DEXCOM_SERVICE_UUID = "0000FEBC-0000-1000-8000-00805F9B34FB"
 private const val DEXCOM_COMPANY_ID = 0x00D0
 
 /**
- * Android BLE central. It only scans, connects and does GATT reads/writes. It never calls
- * createBond(), so no pairing is requested by this app.
+ * Android BLE central. It only scans, connects, lists services, subscribes and writes. It never
+ * calls createBond(), so no pairing is requested by this app.
  */
 @SuppressLint("MissingPermission") // Permissions are checked before use; see hasPermissions().
 class AndroidBleCentral(context: Context) : BleCentral {
@@ -85,6 +92,7 @@ class AndroidBleCentral(context: Context) : BleCentral {
                         name = record?.deviceName ?: runCatching { result.device.name }.getOrNull(),
                         rssi = result.rssi,
                         serviceUuids = record?.serviceUuids?.map { normUuid(it.uuid.toString()) }.orEmpty(),
+                        dexcomData = record?.getManufacturerSpecificData(DEXCOM_COMPANY_ID),
                     ),
                 )
             }
@@ -148,12 +156,21 @@ class AndroidBleCentral(context: Context) : BleCentral {
 }
 
 @SuppressLint("MissingPermission")
-private class AndroidGattConnection(context: Context, device: BluetoothDevice, autoConnect: Boolean) : GattConnection {
+private class AndroidGattConnection(context: Context, private val device: BluetoothDevice, autoConnect: Boolean) : GattConnection {
     override val id: String = device.address
 
     private val connected = CompletableDeferred<Unit>()
     @Volatile private var discovery: CompletableDeferred<Int>? = null
+    @Volatile private var pendingOp: CompletableDeferred<Int>? = null
     @Volatile private var closed = false
+
+    /** Android allows one GATT operation at a time. */
+    private val opLock = Mutex()
+    private val _notifications = Channel<GattNotification>(Channel.UNLIMITED)
+    override val notifications: ReceiveChannel<GattNotification> = _notifications
+
+    /** Whether the phone already had a bond with the device (never made by G7timing). */
+    private val bondedBefore = runCatching { device.bondState != BluetoothDevice.BOND_NONE }.getOrDefault(true)
 
     private val callback = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
@@ -163,12 +180,34 @@ private class AndroidGattConnection(context: Context, device: BluetoothDevice, a
                 val err = BleException("disconnected (status $status)")
                 connected.completeExceptionally(err)
                 discovery?.completeExceptionally(err)
+                pendingOp?.completeExceptionally(err)
+                _notifications.close()
                 if (!closed) { closed = true; gatt.close() }
             }
         }
 
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
             discovery?.complete(status)
+        }
+
+        override fun onDescriptorWrite(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
+            pendingOp?.complete(status)
+        }
+
+        override fun onCharacteristicWrite(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
+            pendingOp?.complete(status)
+        }
+
+        override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, value: ByteArray) {
+            _notifications.trySend(GattNotification(normUuid(characteristic.uuid.toString()), value.copyOf()))
+        }
+
+        @Deprecated("Used before Android 13")
+        override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) return // the overload above is called instead
+            @Suppress("DEPRECATION")
+            val v = characteristic.value ?: return
+            _notifications.trySend(GattNotification(normUuid(characteristic.uuid.toString()), v.copyOf()))
         }
     }
 
@@ -199,12 +238,78 @@ private class AndroidGattConnection(context: Context, device: BluetoothDevice, a
         }
     }
 
+    private fun characteristic(service: String, characteristic: String): BluetoothGattCharacteristic =
+        gatt.getService(UUID.fromString(service))?.getCharacteristic(UUID.fromString(characteristic))
+            ?: throw BleException("characteristic ${characteristic.take(8)} not found")
+
+    /** Runs one GATT operation and waits for its callback's status. */
+    private suspend fun op(name: String, start: () -> Boolean): Int = opLock.withLock {
+        if (closed) throw BleException("connection closed")
+        val d = CompletableDeferred<Int>()
+        pendingOp = d
+        try {
+            if (!start()) throw BleException("$name could not be started")
+            withTimeout(OP_TIMEOUT_MS) { d.await() }
+        } catch (e: TimeoutCancellationException) {
+            throw BleException("$name timed out")
+        } finally {
+            pendingOp = null
+        }
+    }
+
+    override suspend fun enableNotifications(service: String, characteristic: String) {
+        val ch = characteristic(service, characteristic)
+        if (!gatt.setCharacteristicNotification(ch, true)) throw BleException("notifications could not be enabled")
+        val cccd = ch.getDescriptor(CCCD) ?: throw BleException("characteristic has no notification descriptor")
+        val value = if (ch.properties and BluetoothGattCharacteristic.PROPERTY_NOTIFY != 0) {
+            BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+        } else {
+            BluetoothGattDescriptor.ENABLE_INDICATION_VALUE
+        }
+        val status = op("subscribing") {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                gatt.writeDescriptor(cccd, value) == BluetoothStatusCodes.SUCCESS
+            } else {
+                @Suppress("DEPRECATION")
+                cccd.value = value
+                @Suppress("DEPRECATION")
+                gatt.writeDescriptor(cccd)
+            }
+        }
+        if (status != BluetoothGatt.GATT_SUCCESS) throw BleException("subscribing failed (status $status)")
+    }
+
+    override suspend fun write(service: String, characteristic: String, value: ByteArray, withResponse: Boolean) {
+        val ch = characteristic(service, characteristic)
+        val type = if (withResponse) BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT else BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+        val status = op("write") {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                gatt.writeCharacteristic(ch, value, type) == BluetoothStatusCodes.SUCCESS
+            } else {
+                @Suppress("DEPRECATION")
+                ch.writeType = type
+                @Suppress("DEPRECATION")
+                ch.value = value
+                @Suppress("DEPRECATION")
+                gatt.writeCharacteristic(ch)
+            }
+        }
+        if (status != BluetoothGatt.GATT_SUCCESS) throw BleException("write failed (status $status)")
+    }
+
     override suspend fun close() {
         if (closed) return
         closed = true
         runCatching { gatt.disconnect() }
         runCatching { gatt.close() }
         discovery?.completeExceptionally(BleException("closed"))
+        pendingOp?.completeExceptionally(BleException("closed"))
+        _notifications.close()
+        // Safety net: G7timing never asks for a bond, but Android starts one by itself if a device
+        // refuses a write for lack of encryption. Undo any bond that appeared during this connection.
+        if (!bondedBefore && runCatching { device.bondState != BluetoothDevice.BOND_NONE }.getOrDefault(false)) {
+            runCatching { device.javaClass.getMethod("removeBond").invoke(device) }
+        }
     }
 }
 
@@ -213,4 +318,10 @@ private const val DISCOVERY_TIMEOUT_MS = 10_000L
 
 /** Pause after clearing the service cache, before starting discovery. */
 private const val REFRESH_SETTLE_MS = 300L
+
+/** How long one write or subscription may take. */
+private const val OP_TIMEOUT_MS = 4_000L
+
+/** Client Characteristic Configuration descriptor, which turns notifications on. */
+private val CCCD: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
 

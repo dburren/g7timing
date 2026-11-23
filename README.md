@@ -124,9 +124,34 @@ phone to maximise the odds of detecting the occasional Bluetooth signal.
 The **STOP** button cancels everything and returns to the Start screen.
 Nothing is saved, and each Start begins from scratch.
 
-**G7timing can't tell which applicator a sensor belongs to.**
-If more than one transmitter is showing as an option ("can't be checked"),
-move the other applicators away and watch which stops being seen.
+**Scan the sensor's applicator or box to pick out its transmitter.** Press **Scan applicator or
+box** and point the camera at the square code (a Data Matrix) on the applicator, next to the
+4-digit number, or on the sensor's box. As soon as its transmitter next advertises, its card
+moves to the top under "This is sensor …4186" (the last 4 digits of its serial number), with a
+large counter of the time since it was last seen. Other G7s are tucked behind a "Show other G7s
+nearby" button. You can scan before or after pressing Start.
+
+If the code won't scan, or there's no camera, press **Type serial number** and type the serial
+number printed on the applicator or box instead (usually 12 digits; spaces and dashes are
+ignored). A mistyped digit means the transmitter is never recognised, so check the serial number
+shown at the top of the screen against the one printed. The camera is used only for this,
+and the serial number is used only to find the transmitter: it's shown in full at the top of the
+screen so you can check it against the applicator or box, but it isn't saved or logged.
+
+**Or type the sensor code.** Press **Type sensor code** and type the 4-digit code printed on the
+applicator. This replaces any serial number being looked for (and a serial number replaces a code).
+Without a serial number, G7timing has to ask each sensor: for every G7 that responds, it runs the
+first part of the pairing exchange using the code, which shows whether that sensor uses it, and then
+disconnects before pairing. The check usually runs on the same connection that found the sensor
+working. Each sensor gets up to 2 tries; one that gives no answer twice is left alone. The search
+carries on after a match, in case two sensors nearby share a code. A sensor that doesn't respond,
+such as an unstarted sensor still in its applicator, can't be checked this way, so the code is
+most useful for a sensor that has already started. The code is shown at the top of the screen for
+checking, but it isn't saved or logged.
+
+Without a scanned or typed serial number or a sensor code, G7timing can't tell which applicator a transmitter belongs to. If more than one
+transmitter accepts a connection but doesn't respond, move the other applicators away and watch
+which stops being seen.
 
 The screen stays on while a session runs. Monitoring only works in the foreground
 (so if the phone powers off the monitoring is paused).
@@ -145,6 +170,13 @@ The scanning can then be Stopped.
 Sorting a transmitter needs one connection, so G7timing may briefly connect once to any nearby
 G7 at −99 dBm or stronger, including one someone is wearing. It then leaves it alone for the rest
 of the session to avoid disrupting access to anyone's sensor.
+
+With a sensor code, G7timing also connects to each G7 that responds (up to 2 tries) to run the
+first part of the pairing exchange. It never completes it: it doesn't answer the sensor's challenge,
+send certificates or ask for a bond, so nothing is paired and no sign-in happens. That it leaves no
+trace on the sensor (such as using up a pairing slot) is expected but hasn't been confirmed on
+hardware. Some of the sensor's apps limit how many failed pairing attempts a sensor accepts in a
+short time, so avoid using a code check near someone else's sensor.
 
 Although no disruption to sensors was noticed during testing,
 use the app away from other G7 users where you can.
@@ -208,6 +240,14 @@ including detecting two applicators at once, apart from showing iOS's own identi
 - A working G7 lists its services within about 2.5 s, even at −90 dBm. That difference is how
   G7timing tells the two apart.
 - Working G7s wake every 5 minutes. Unworn ones were heard less often and much more faintly.
+- **A G7's advertisement identifies its serial number.** The first two bytes of its Dexcom
+  manufacturer data (company ID 0x00D0) are a CRC-16/XMODEM of the serial number, as ASCII
+  digits, low byte first. The serial number is GS1 field (21) in the applicator's Data Matrix,
+  which also holds the product number (01), manufacture date (11), expiry (17) and the 4-digit
+  pairing code (240). The sensor's box has a Data Matrix with the same serial number (21), but
+  not the pairing code. The two characters after `DXCM` in the name are unrelated to the serial.
+  Confirmed with one applicator out of four nearby G7s; the next two bytes were `00 04` on most
+  transmitters and `02 04` on one working sensor, meaning not yet known.
 
 - **A working sensor was not visibly affected.** The system paired with the working G7 used in
   testing showed no missed readings, across many test sessions that each connected to it once.
@@ -261,3 +301,6 @@ implied. See the License for the specific language governing permissions and lim
 License.
 
 Each source file carries an `SPDX-License-Identifier: Apache-2.0` header.
+
+The sensor-code check follows the protocol as published in LoopKit's G7SensorKit (MIT licence); see
+[`NOTICE`](NOTICE).

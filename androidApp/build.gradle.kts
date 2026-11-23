@@ -30,4 +30,9 @@ android {
 dependencies {
     implementation(project(":shared"))
     implementation(libs.androidx.activity.compose)
+    // Camera and Data Matrix reader for scanning applicator codes (both Apache 2.0, open source).
+    implementation(libs.androidx.camera.camera2)
+    implementation(libs.androidx.camera.lifecycle)
+    implementation(libs.androidx.camera.view)
+    implementation(libs.zxing.cpp)
 }

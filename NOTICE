@@ -1,0 +1,44 @@
+G7timing
+Copyright 2026 David Burren
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+-------------------------------------------------------------------------------
+Third-party material
+
+The sensor-code check (shared/src/commonMain/kotlin/com/bionicwookiee/g7timing/g7/codecheck/)
+was written for G7timing in Kotlin, following the G7 pairing exchange as implemented in LoopKit
+G7SensorKit (https://github.com/LoopKit/G7SensorKit, branch next-dev, commit e7fdc36), in
+particular G7JPAKE.swift, G7PCert.swift, G7AES.swift, G7Authenticator.swift and
+BluetoothServices.swift. That includes the message sequence, the characteristic UUIDs, the round
+layout and transcript format, the party identifier and the fixed round-3 randomizer. G7SensorKit
+is distributed under this licence:
+
+The MIT License (MIT)
+
+Copyright (c) 2022 LoopKit Authors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+-------------------------------------------------------------------------------
+Trademarks
+
+"Dexcom", "G7", "ONE+" and "Stelo" are trademarks of Dexcom, Inc. G7timing is an independent
+project, not made, endorsed or supported by Dexcom. The names are used only to say which devices
+it works with.

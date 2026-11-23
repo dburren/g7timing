@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Debug builds only: a bench for testing the sensor-code check against one named sensor. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <activity
+            android:name=".CodeCheckBenchActivity"
+            android:exported="true"
+            android:label="G7timing code-check bench" />
+    </application>
+</manifest>

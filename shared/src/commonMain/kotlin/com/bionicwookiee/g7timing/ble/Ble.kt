@@ -3,6 +3,7 @@
 
 package com.bionicwookiee.g7timing.ble
 
+import kotlinx.coroutines.channels.ReceiveChannel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
 
@@ -14,12 +15,17 @@ data class BleAdvertisement(
     val name: String?,
     val rssi: Int,
     val serviceUuids: List<String>,
+    /** Dexcom manufacturer-specific data (company 0x00D0), without the company ID; null if absent. */
+    val dexcomData: ByteArray? = null,
 )
 
 class BleException(message: String, cause: Throwable? = null) : Exception(message, cause)
 
 /** The phone can't make the device answer for itself (e.g. its service cache can't be cleared), so it can't be sorted. */
 class CheckUnavailableException(message: String) : Exception(message)
+
+/** A value a device sent by notification or indication. */
+class GattNotification(val characteristic: String, val value: ByteArray)
 
 /** Platform Bluetooth LE central. Implementations never create a bond. */
 interface BleCentral {
@@ -52,6 +58,25 @@ interface GattConnection {
      * [CheckUnavailableException] if that can't be guaranteed.
      */
     suspend fun discoverServices(): List<String>
+
+    /**
+     * Values the device sends from characteristics subscribed with [enableNotifications], in the
+     * order they arrive. Nothing is dropped, so values that arrive before anyone reads are kept.
+     */
+    val notifications: ReceiveChannel<GattNotification>
+
+    /**
+     * Subscribes to notifications (or indications) from a characteristic. Call after
+     * [discoverServices]. Throws [BleException] if it isn't there or the device refuses.
+     */
+    suspend fun enableNotifications(service: String, characteristic: String)
+
+    /**
+     * Writes to a characteristic. With [withResponse], waits for the device to acknowledge.
+     * Throws [BleException] on failure. Never asks for a bond: if the device demands encryption,
+     * the write fails.
+     */
+    suspend fun write(service: String, characteristic: String, value: ByteArray, withResponse: Boolean)
 
     /** Disconnects and releases the connection. Safe to call more than once. */
     suspend fun close()

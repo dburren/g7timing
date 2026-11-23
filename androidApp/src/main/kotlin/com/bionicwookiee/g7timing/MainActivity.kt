@@ -4,6 +4,7 @@
 package com.bionicwookiee.g7timing
 
 import android.app.Application
+import android.content.Intent
 import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
@@ -45,8 +46,14 @@ class MainActivity : ComponentActivity() {
                     launcher.launch(AndroidBleCentral.requiredPermissions())
                 }
             }
+            val scanLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
+                val data = r.data ?: return@rememberLauncherForActivityResult
+                data.getStringExtra(ScanApplicatorActivity.EXTRA_CODE)?.let { vm.controller.onApplicatorScanned(it) }
+                data.getStringExtra(ScanApplicatorActivity.EXTRA_ERROR)?.let { vm.controller.onApplicatorScanFailed(it) }
+            }
             G7timingApp(
                 controller = vm.controller,
+                onScanApplicator = { scanLauncher.launch(Intent(this, ScanApplicatorActivity::class.java)) },
                 darkTheme = isSystemInDarkTheme(),
                 onKeepScreenOn = { on ->
                     if (on) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
