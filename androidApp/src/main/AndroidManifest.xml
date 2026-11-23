@@ -3,6 +3,9 @@
     xmlns:tools="http://schemas.android.com/tools">
 
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />
+    <!-- Used to scan the code on an applicator; the app still works without a camera. -->
+    <uses-feature android:name="android.hardware.camera.any" android:required="false" />
+    <uses-permission android:name="android.permission.CAMERA" />
 
     <!-- Android 12+ -->
     <uses-permission
@@ -32,5 +35,10 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <activity
+            android:name=".ScanApplicatorActivity"
+            android:exported="false"
+            android:label="Scan applicator or box"
+            android:theme="@style/Theme.G7timing" />
     </application>
 </manifest>

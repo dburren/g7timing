@@ -22,4 +22,32 @@ object G7Protocol {
         if (name != null) return NAME_PREFIXES.any { name.startsWith(it) }
         return serviceUuids.any { it.uppercase().let { u -> u == ADVERTISED_SERVICE_16 || u.startsWith("0000FEBC-") } }
     }
+
+    /** Bluetooth SIG company ID Dexcom uses in its manufacturer-specific advertisement data. */
+    const val DEXCOM_COMPANY_ID = 0x00D0
+
+    /**
+     * The serial-number check value a G7 advertises: the first 2 bytes of its Dexcom
+     * manufacturer data, low byte first. Null if the data is missing or too short.
+     *
+     * Found on hardware: these bytes are [serialCrc] of the serial number printed (and encoded)
+     * on the sensor's applicator. The advertised name's suffix is unrelated to the serial.
+     */
+    fun advertisedSerialCrc(dexcomData: ByteArray?): Int? {
+        if (dexcomData == null || dexcomData.size < 2) return null
+        return (dexcomData[0].toInt() and 0xFF) or ((dexcomData[1].toInt() and 0xFF) shl 8)
+    }
+
+    /** CRC-16/XMODEM (poly 0x1021, init 0, not reflected, no final XOR) of [serial] as ASCII. */
+    fun serialCrc(serial: String): Int {
+        var crc = 0
+        for (ch in serial) {
+            crc = crc xor ((ch.code and 0xFF) shl 8)
+            repeat(8) {
+                crc = if (crc and 0x8000 != 0) (crc shl 1) xor 0x1021 else crc shl 1
+                crc = crc and 0xFFFF
+            }
+        }
+        return crc
+    }
 }

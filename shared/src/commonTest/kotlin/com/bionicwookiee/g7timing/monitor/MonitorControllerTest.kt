@@ -21,6 +21,14 @@ import com.bionicwookiee.g7timing.ble.BleCentral
 import com.bionicwookiee.g7timing.ble.BleException
 import com.bionicwookiee.g7timing.ble.CheckUnavailableException
 import com.bionicwookiee.g7timing.ble.GattConnection
+import com.bionicwookiee.g7timing.ble.GattNotification
+import com.bionicwookiee.g7timing.g7.G7Protocol
+import com.bionicwookiee.g7timing.g7.codecheck.G7CodeCheck
+import com.bionicwookiee.g7timing.g7.codecheck.G7Jpake
+import com.bionicwookiee.g7timing.g7.codecheck.JpakeRound
+import com.bionicwookiee.g7timing.g7.codecheck.SimulatedSensor
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.ReceiveChannel
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -41,10 +49,31 @@ private const val G6 = "FB:5C:00:00:78:43"
  */
 private data class FakeDevice(
     val id: String, val name: String, val rssi: Int, val everySec: Int, val answers: Boolean, val canSort: Boolean = true,
-)
+    /** Made-up serial number; its check value is advertised as a real G7 does. */
+    val serial: String? = null,
+    /** Its 4-digit sensor code, for the code exchange. */
+    val code: String = "9999",
+    /** If true, it never answers the challenge (a code check gets no answer). */
+    val silentOnChallenge: Boolean = false,
+) {
+    val dexcomData: ByteArray? = serial?.let { G7Protocol.serialCrc(it) }?.let { byteArrayOf(it.toByte(), (it shr 8).toByte(), 0, 4) }
+}
 
-private class FakeConnection(override val id: String, private val answers: Boolean, private val canSort: Boolean) : GattConnection {
+/** A connection to a simulated G7, which runs its side of the code exchange like a real one. */
+private class FakeConnection(
+    override val id: String,
+    private val answers: Boolean,
+    private val canSort: Boolean,
+    private val device: FakeDevice,
+    private val log: MutableList<String>,
+) : GattConnection {
     var discovered = false
+    private val channel = Channel<GattNotification>(Channel.UNLIMITED)
+    override val notifications: ReceiveChannel<GattNotification> = channel
+    private val sensor = SimulatedSensor(device.code, seed = device.id.hashCode() and 0x7F)
+    private val clientRounds = mutableListOf<ByteArray>()
+    private var collecting = ByteArray(0)
+
     override suspend fun discoverServices(): List<String> {
         if (!canSort) throw CheckUnavailableException("could not clear Android's service cache")
         if (!answers) {
@@ -53,9 +82,48 @@ private class FakeConnection(override val id: String, private val answers: Boole
         }
         delay(1_000)
         discovered = true
-        return listOf("F8083532-849E-531C-C594-30F1F86A4EA5")
+        return listOf(G7CodeCheck.SERVICE)
     }
-    override suspend fun close() {}
+
+    override suspend fun enableNotifications(service: String, characteristic: String) {
+        if (!discovered) throw BleException("not discovered")
+        delay(50)
+    }
+
+    private fun sendCert(bytes: ByteArray) {
+        bytes.toList().chunked(20).forEach { channel.trySend(GattNotification(G7CodeCheck.CERTIFICATE, it.toByteArray())) }
+    }
+
+    override suspend fun write(service: String, characteristic: String, value: ByteArray, withResponse: Boolean) {
+        delay(if (withResponse) 30 else 5)
+        if (characteristic == G7CodeCheck.CERTIFICATE) {
+            collecting += value
+            if (collecting.size == JpakeRound.SIZE) { clientRounds += collecting; collecting = ByteArray(0) }
+            return
+        }
+        when (value[0].toInt()) {
+            0x0A -> {
+                channel.trySend(GattNotification(G7CodeCheck.AUTHENTICATION, byteArrayOf(0x0A, value[1])))
+                when (value[1].toInt()) {
+                    0 -> sendCert(sensor.round1.encode())
+                    1 -> sendCert(sensor.round2.encode())
+                    2 -> sendCert(sensor.round3(JpakeRound.decode(clientRounds[0])!!, JpakeRound.decode(clientRounds[1])!!).encode())
+                }
+            }
+            0x02 -> {
+                log += "$id challenged"
+                if (device.silentOnChallenge) return
+                val key = sensor.sessionKey(JpakeRound.decode(clientRounds[1])!!, JpakeRound.decode(clientRounds[2])!!)
+                val answer = G7Jpake.challengeAnswer(key, value.copyOfRange(1, 9))
+                channel.trySend(GattNotification(G7CodeCheck.AUTHENTICATION, byteArrayOf(0x03) + answer + ByteArray(8) { 7 }))
+            }
+            else -> log += "$id got opcode ${value[0]}"
+        }
+    }
+
+    override suspend fun close() {
+        channel.close()
+    }
 }
 
 /** Simulated transmitters advertising on a schedule. */
@@ -66,6 +134,10 @@ private class FakeCentral(private val devices: List<FakeDevice>) : BleCentral {
     /** Connections actually made, in order. */
     val connects = mutableListOf<String>()
     var scansStarted = 0
+    /** Devices that answer from now on, e.g. a sensor inserted (or no longer busy) after it was first checked. */
+    val nowAnswering = mutableSetOf<String>()
+    /** What the simulated sensors were sent during code checks. */
+    val sensorLog = mutableListOf<String>()
 
     override fun scan(): Flow<BleAdvertisement> = adverts.onStart { scansStarted++ }
 
@@ -73,14 +145,14 @@ private class FakeCentral(private val devices: List<FakeDevice>) : BleCentral {
     override suspend fun connect(id: String, timeoutMs: Long?): GattConnection {
         if (timeoutMs == null) adverts.first { it.id == id }
         connects += id
-        return devices.single { it.id == id }.let { FakeConnection(id, it.answers, it.canSort) }
+        return devices.single { it.id == id }.let { FakeConnection(id, it.answers || id in nowAnswering, it.canSort, it, sensorLog) }
     }
 
     suspend fun advertiseForever() {
         var tick = 0
         while (true) {
             devices.filter { tick % it.everySec == 0 }
-                .forEach { adverts.emit(BleAdvertisement(it.id, it.name, it.rssi, emptyList())) }
+                .forEach { adverts.emit(BleAdvertisement(it.id, it.name, it.rssi, emptyList(), it.dexcomData)) }
             delay(1.seconds)
             tick++
         }
@@ -243,5 +315,194 @@ class MonitorControllerTest {
         controller.start()
         advanceTimeBy(13.minutes)
         assertTrue(central.scansStarted >= 4, "scan started ${central.scansStarted} times in 13 minutes")
+    }
+
+    /** Synthetic GS1 element string for an applicator: (01) product, (21) serial, (17) expiry, (240) pairing code. */
+    private fun applicatorCode(serial: String, pairing: String) = "0100386270004512" + "21" + serial + "\u001D" + "17280101" + "240" + pairing
+
+    @Test
+    fun scannedApplicatorIsMatchedToTheTransmitterAdvertisingItsSerial() = runTest {
+        val (_, controller) = setUp(
+            FakeDevice(UNWORN, "DXCMaa", -90, everySec = 60, answers = false, serial = "100000000001"),
+            FakeDevice(UNWORN_2, "DXCMbb", -90, everySec = 60, answers = false, serial = "100000000002"),
+        )
+        // Scanned before Start: kept when the session starts.
+        assertTrue(controller.onApplicatorScanned(applicatorCode("100000000002", "1234")))
+        controller.start()
+        advanceTimeBy(2.minutes)
+
+        val st = controller.state.value
+        assertEquals("sensor …0002", st.applicator?.label)
+        assertEquals("0002", st.applicator?.serialEnding)
+        assertEquals("1000 0000 0002", st.applicator?.serialGrouped, "shown in full for checking")
+        assertFalse(st.applicator!!.typed, "read from the code, so no mistyping warning")
+        assertFalse("100000000002" in st.applicator.toString(), "kept out of printed state")
+        val matched = st.transmitters.filter { st.isTarget(it) }.map { it.name }
+        assertEquals(listOf("DXCMbb"), matched)
+        assertTrue(st.log.any { it.endsWith("DXCMbb is sensor …0002") }, st.log.joinToString("\n"))
+        assertFalse(st.log.any { "100000000002" in it }, "the full serial is never logged")
+    }
+
+    @Test
+    fun scanningDuringASessionMatchesAnAlreadyHeardTransmitter() = runTest {
+        val (_, controller) = setUp(FakeDevice(UNWORN, "DXCMaa", -90, everySec = 60, answers = false, serial = "100000000001"))
+        controller.start()
+        advanceTimeBy(2.minutes)
+        assertTrue(controller.onApplicatorScanned(applicatorCode("100000000001", "5678")))
+        val st = controller.state.value
+        assertTrue(st.isTarget(st.transmitters.single()))
+        assertTrue(st.log.any { it.endsWith("DXCMaa is sensor …0001") })
+    }
+
+    @Test
+    fun typedSerialIsMatchedLikeAScannedOne() = runTest {
+        val (_, controller) = setUp(FakeDevice(UNWORN, "DXCMaa", -90, everySec = 60, answers = false, serial = "100000000001"))
+        controller.start()
+        advanceTimeBy(2.minutes)
+        assertFalse(controller.onSerialEntered("12"))
+        assertTrue(controller.state.value.applicatorError != null)
+        assertTrue(controller.onSerialEntered("1000 0000 0001"))
+        assertTrue(controller.state.value.applicator!!.typed)
+        val st = controller.state.value
+        assertEquals(null, st.applicatorError)
+        assertTrue(st.isTarget(st.transmitters.single()))
+        assertTrue(st.log.any { it.endsWith("Entered sensor …0001") })
+        assertTrue(st.log.any { it.endsWith("DXCMaa is sensor …0001") })
+        assertFalse(st.log.any { "100000000001" in it }, "the full serial is never logged")
+    }
+
+    @Test
+    fun aCodeWithoutASerialIsRejected() = runTest {
+        val (_, controller) = setUp()
+        assertFalse(controller.onApplicatorScanned("https://example.com"))
+        assertEquals(null, controller.state.value.applicator)
+        assertTrue(controller.state.value.applicatorError != null)
+    }
+
+    @Test
+    fun scannedTransmitterThatDidntRespondIsCheckedAgainAndOthersAreNot() = runTest {
+        val (central, controller) = setUp(
+            FakeDevice(UNWORN, "DXCMaa", -90, everySec = 60, answers = false, serial = "100000000001"),
+            FakeDevice(UNWORN_2, "DXCMbb", -90, everySec = 60, answers = false, serial = "100000000002"),
+        )
+        controller.onApplicatorScanned(applicatorCode("100000000001", "1234"))
+        controller.start()
+        advanceTimeBy(2.minutes)
+        assertTrue(controller.state.value.transmitters.all { it.status == TransmitterStatus.CantBeChecked })
+
+        // Both start answering (say, they were busy before); only the scanned one is asked again.
+        central.nowAnswering += listOf(UNWORN, UNWORN_2)
+        advanceTimeBy(2.minutes)
+        val st = controller.state.value
+        assertEquals(TransmitterStatus.Working, st.transmitters.single { it.id == UNWORN }.status, st.log.joinToString("\n"))
+        assertEquals(TransmitterStatus.CantBeChecked, st.transmitters.single { it.id == UNWORN_2 }.status)
+        assertTrue(st.log.any { it.endsWith("DXCMaa responded when checked again: working sensor, left alone") })
+
+        // Left alone from then on.
+        val connections = central.connects.count { it == UNWORN }
+        advanceTimeBy(5.minutes)
+        assertEquals(connections, central.connects.count { it == UNWORN })
+    }
+
+    @Test
+    fun scannedTransmitterIsReCheckedOnlyAFewTimes() = runTest {
+        val (_, controller) = setUp(FakeDevice(UNWORN, "DXCMaa", -90, everySec = 60, answers = false, serial = "100000000001"))
+        controller.onApplicatorScanned(applicatorCode("100000000001", "1234"))
+        controller.start()
+        advanceTimeBy(10.minutes)
+        val log = controller.state.value.log
+        assertEquals(3, log.count { "but didn't respond (check" in it }, log.joinToString("\n"))
+        assertEquals(TransmitterStatus.CantBeChecked, controller.state.value.transmitters.single().status)
+    }
+
+    // ------------------------------------------------------------------ sensor code
+
+    @Test
+    fun sensorCodeIsCheckedOnEachRespondingSensorAndNeverSignsIn() = runTest {
+        val (central, controller) = setUp(
+            FakeDevice(WORKING, "DXCMaa", -80, everySec = 300, answers = true, code = "1234"),
+            FakeDevice(UNWORN_2, "DXCMbb", -80, everySec = 300, answers = true, code = "5678"),
+            FakeDevice(UNWORN, "DXCMcc", -90, everySec = 60, answers = false, code = "1234"),
+        )
+        assertTrue(controller.onSensorCodeEntered("1234"))
+        controller.start()
+        advanceTimeBy(6.minutes)
+
+        val st = controller.state.value
+        val byName = st.transmitters.associateBy { it.name }
+        assertEquals(CodeStatus.Matches, byName["DXCMaa"]!!.codeStatus, st.log.joinToString("\n"))
+        assertEquals(CodeStatus.DoesNotMatch, byName["DXCMbb"]!!.codeStatus)
+        assertEquals(1, byName["DXCMaa"]!!.codeAttempts, "checked on the connection that found it working")
+        // The unworn one doesn't respond, so its code can't be checked.
+        assertEquals(CodeStatus.NotChecked, byName["DXCMcc"]!!.codeStatus)
+        assertEquals(listOf("DXCMaa"), st.transmitters.filter { st.isTarget(it) }.map { it.name })
+        assertTrue(st.log.any { it.endsWith("DXCMaa uses the sensor code") })
+        assertTrue(st.log.any { it.endsWith("DXCMbb doesn't use the sensor code") })
+        assertFalse(central.sensorLog.any { "opcode" in it }, "never answers the sensor's challenge: ${central.sensorLog}")
+        assertFalse(st.log.any { "1234" in it }, "the code is never logged")
+        assertFalse("1234" in st.toString(), "kept out of printed state")
+        // Each working sensor was connected to once: the check happened on that connection.
+        assertEquals(1, central.connects.count { it == WORKING })
+    }
+
+    @Test
+    fun searchCarriesOnAfterAMatch() = runTest {
+        val (_, controller) = setUp(
+            FakeDevice(WORKING, "DXCMaa", -80, everySec = 300, answers = true, code = "1234"),
+            FakeDevice(UNWORN_2, "DXCMbb", -80, everySec = 300, answers = true, code = "1234"),
+        )
+        controller.onSensorCodeEntered("1234")
+        controller.start()
+        advanceTimeBy(6.minutes)
+        val st = controller.state.value
+        assertEquals(listOf("DXCMaa", "DXCMbb"), st.transmitters.filter { st.isTarget(it) }.mapNotNull { it.name }.sorted())
+    }
+
+    @Test
+    fun codeEnteredDuringASessionChecksWorkingSensorsOnTheirNextWake() = runTest {
+        val (central, controller) = setUp(FakeDevice(WORKING, "DXCMaa", -80, everySec = 300, answers = true, code = "1234"))
+        controller.start()
+        advanceTimeBy(6.minutes)
+        assertEquals(TransmitterStatus.Working, controller.state.value.transmitters.single().status)
+        val before = central.connects.count { it == WORKING }
+        controller.onSensorCodeEntered("1234")
+        advanceTimeBy(6.minutes)
+        val t = controller.state.value.transmitters.single()
+        assertEquals(CodeStatus.Matches, t.codeStatus, controller.state.value.log.joinToString("\n"))
+        assertEquals(1, t.codeAttempts)
+        assertTrue(central.connects.count { it == WORKING } > before, "connected again to check it")
+    }
+
+    @Test
+    fun noAnswerIsTriedTwiceThenGivenUp() = runTest {
+        val (central, controller) = setUp(
+            FakeDevice(WORKING, "DXCMaa", -80, everySec = 60, answers = true, code = "1234", silentOnChallenge = true),
+        )
+        controller.onSensorCodeEntered("1234")
+        controller.start()
+        advanceTimeBy(10.minutes)
+        val t = controller.state.value.transmitters.single()
+        assertEquals(CodeStatus.GaveUp, t.codeStatus, controller.state.value.log.joinToString("\n"))
+        assertEquals(2, t.codeAttempts)
+        assertEquals(2, central.sensorLog.count { it.endsWith("challenged") })
+        val connections = central.connects.size
+        advanceTimeBy(10.minutes)
+        assertEquals(connections, central.connects.size, "no more connections after the second try")
+    }
+
+    @Test
+    fun codeAndSerialReplaceEachOther() = runTest {
+        val (_, controller) = setUp()
+        assertFalse(controller.onSensorCodeEntered("123"))
+        assertFalse(controller.onSensorCodeEntered("12a4"))
+        assertTrue(controller.onSerialEntered("100000000001"))
+        assertTrue(controller.onSensorCodeEntered("12 34"))
+        assertEquals(null, controller.state.value.applicator, "a code replaces the serial number")
+        assertEquals("1234", controller.state.value.sensorCode)
+        assertTrue(controller.onSerialEntered("100000000001"))
+        assertEquals(null, controller.state.value.sensorCode, "a serial number replaces the code")
+        controller.onSensorCodeEntered("1234")
+        controller.clearApplicator()
+        assertEquals(null, controller.state.value.sensorCode)
     }
 }
